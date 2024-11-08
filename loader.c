@@ -4,6 +4,7 @@
 #include <ucontext.h>
 
 #define PAGE_SIZE 4096
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 // Global variables to track statistics
 static int total_page_faults = 0;
@@ -19,9 +20,9 @@ static int elf_size;
 
 // Structure to track loaded segments
 typedef struct {
-    Elf32_Addr start_addr;
-    Elf32_Word size;
-    Elf32_Off offset;
+    uintptr_t start_addr;  // Using uintptr_t for pointer-sized addresses
+    size_t size;
+    size_t offset;
     void* mapped_addr;
 } LoadedSegment;
 
@@ -32,7 +33,7 @@ static int num_loaded_segments = 0;
 // Function prototypes
 static void segfault_handler(int sig, siginfo_t *si, void *unused);
 static int load_page_for_address(void* fault_addr);
-static Elf32_Phdr* find_segment_for_address(Elf32_Addr addr);
+static Elf32_Phdr* find_segment_for_address(uintptr_t addr);
 
 /*
  * Initialize signal handler for segmentation faults
@@ -64,7 +65,7 @@ static void segfault_handler(int sig, siginfo_t *si, void *unused) {
 /*
  * Find the program header segment containing the given address
  */
-static Elf32_Phdr* find_segment_for_address(Elf32_Addr addr) {
+static Elf32_Phdr* find_segment_for_address(uintptr_t addr) {
     for (int i = 0; i < ehdr->e_phnum; i++) {
         if (phdr[i].p_type == PT_LOAD &&
             addr >= phdr[i].p_vaddr &&
@@ -79,7 +80,7 @@ static Elf32_Phdr* find_segment_for_address(Elf32_Addr addr) {
  * Load a single page for the given fault address
  */
 static int load_page_for_address(void* fault_addr) {
-    Elf32_Addr addr = (Elf32_Addr)fault_addr;
+    uintptr_t addr = (uintptr_t)fault_addr;
     Elf32_Phdr* segment = find_segment_for_address(addr);
     
     if (!segment) {
@@ -87,8 +88,8 @@ static int load_page_for_address(void* fault_addr) {
     }
 
     // Calculate page-aligned addresses
-    Elf32_Addr page_start = (Elf32_Addr)fault_addr & ~(PAGE_SIZE - 1);
-    Elf32_Addr segment_offset = page_start - segment->p_vaddr;
+    uintptr_t page_start = addr & ~(PAGE_SIZE - 1);
+    size_t segment_offset = page_start - segment->p_vaddr;
     size_t remaining_size = segment->p_memsz - segment_offset;
     size_t page_size = (remaining_size > PAGE_SIZE) ? PAGE_SIZE : remaining_size;
 
@@ -173,7 +174,7 @@ void load_and_run_elf(char** argv) {
     }
 
     // Get the entry point address
-    void* entrypoint = (void*)ehdr->e_entry;
+    void* entrypoint = (void*)(uintptr_t)ehdr->e_entry;
 
     // Cast entry point to function pointer and execute
     int (*_start)() = (int (*)())entrypoint;
