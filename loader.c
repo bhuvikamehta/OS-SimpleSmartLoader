@@ -1,15 +1,7 @@
 #define _GNU_SOURCE
 #include "loader.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <elf.h>
 #include <signal.h>
-#include <sys/mman.h>
-#include <sys/types.h>
 #include <sys/stat.h>
-#include <string.h>
 
 int fd, page_faults = 0;
 double allocated_pages = 0;
