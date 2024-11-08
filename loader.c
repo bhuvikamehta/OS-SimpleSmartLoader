@@ -36,43 +36,24 @@ void segfault_handler(int signo, siginfo_t *si, void *context) {
     }
 
     if (target_segment == -1) {
-        // Check if the fault is within any of the segments
-        for (int i = 0; i < ehdr->e_phnum; i++) {
-            if (phdr[i].p_type == PT_LOAD) {
-                if ((int)si->si_addr >= (int)phdr[i].p_vaddr && (int)si->si_addr < (int)(phdr[i].p_vaddr + phdr[i].p_memsz)) {
-                    target_segment = i;
-                    break;
-                }
-            }
-        }
-
-        if (target_segment == -1) {
-            printf("Segfault not related to unallocated segment\n");
-            exit(1);
-        }
+        printf("Segfault not related to unallocated segment\n");
+        exit(1);
     }
 
-    int page_size = 4096;
-    int page_start = (int)phdr[target_segment].p_vaddr & ~(page_size - 1);
-    int page_end = ((int)(phdr[target_segment].p_vaddr + phdr[target_segment].p_memsz) + page_size - 1) & ~(page_size - 1);
-    int num_pages = (page_end - page_start) / page_size;
+    void *mem = mmap((void *)phdr[target_segment].p_vaddr, phdr[target_segment].p_memsz, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (mem == MAP_FAILED) {
+        printf("Error mapping memory\n");
+        exit(1);
+    }
+    page_allocations++;
 
-    for (int j = 0; j < num_pages; j++) {
-        void *mem = mmap((void *)(page_start + j * page_size), page_size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-        if (mem == MAP_FAILED) {
-            printf("Error mapping memory\n");
-            exit(1);
-        }
-        page_allocations++;
-
-        lseek(fd, phdr[target_segment].p_offset + j * page_size, SEEK_SET);
-        if (read(fd, mem, page_size) != page_size) {
-            printf("Error reading from file\n");
-            exit(1);
-        }
+    lseek(fd, phdr[target_segment].p_offset, SEEK_SET);
+    if (read(fd, mem, phdr[target_segment].p_memsz) != phdr[target_segment].p_memsz) {
+        printf("Error reading from file\n");
+        exit(1);
     }
 
-    int fragmented_bytes = (int)phdr[target_segment].p_memsz % page_size;
+    int fragmented_bytes = (int)phdr[target_segment].p_memsz % 4096;
     if (fragmented_bytes > 0) {
         fragmented_memory += (double)fragmented_bytes / 1024.0;
     }
