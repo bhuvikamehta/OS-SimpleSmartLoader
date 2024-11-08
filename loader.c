@@ -65,9 +65,8 @@ void segfault_handler(int signo, siginfo_t *si, void *context) {
         fragmented_memory += (double)fragmented_bytes / 1024.0;
     }
 
-    int (*_start)() = (int (*)())((int)phdr[target_segment].p_vaddr + (ehdr->e_entry - phdr[target_segment].p_vaddr));
-    int result = _start();
-    printf("User _start return value = %d\n", result);
+    void *entry_point = (void *)((int)phdr[target_segment].p_vaddr + (ehdr->e_entry - phdr[target_segment].p_vaddr));
+    ((void (*)())entry_point)();
 }
 
 void load_and_run_elf(char **argv) {
@@ -97,9 +96,8 @@ void load_and_run_elf(char **argv) {
     sa.sa_flags = SA_SIGINFO;
     sigaction(SIGSEGV, &sa, NULL);
 
-    int (*_start)() = (int (*)())ehdr->e_entry;
-    int result = _start();
-    printf("User _start return value = %d\n", result);
+    // Call the _start function to start the program execution
+    ((void (*)())ehdr->e_entry)();
 
     printf("Total page faults: %d\n", page_faults);
     printf("Total page allocations: %d\n", page_allocations);
