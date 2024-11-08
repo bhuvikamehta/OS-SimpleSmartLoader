@@ -177,11 +177,18 @@ void load_and_run_elf(char** argv) {
     void* entrypoint = (void*)(uintptr_t)ehdr->e_entry;
 
     // Cast entry point to function pointer and execute
-    int (*_start)(void) = (void (*)(void))(uintptr_t)entrypoint;
+     int (*_start)() = (int (*)())entrypoint;
+
     
     // This will trigger page faults which will be handled by our handler
-    // int result = _start();
-    _start();
+     int result = _start();
+    //_start();
     
-    // printf("User _start return value = %d\n", result);
+     printf("User _start return value = %d\n", result);
+}
+
+int main(int argc, char** argv) {
+    // This will trigger page faults which will be handled by our handler
+    load_and_run_elf(argv);
+    return 0;
 }
