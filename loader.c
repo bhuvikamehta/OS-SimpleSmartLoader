@@ -36,8 +36,20 @@ void segfault_handler(int signo, siginfo_t *si, void *context) {
     }
 
     if (target_segment == -1) {
-        printf("Segfault not related to unallocated segment\n");
-        exit(1);
+        // Check if the fault is within any of the segments
+        for (int i = 0; i < ehdr->e_phnum; i++) {
+            if (phdr[i].p_type == PT_LOAD) {
+                if ((int)si->si_addr >= (int)phdr[i].p_vaddr && (int)si->si_addr < (int)(phdr[i].p_vaddr + phdr[i].p_memsz)) {
+                    target_segment = i;
+                    break;
+                }
+            }
+        }
+
+        if (target_segment == -1) {
+            printf("Segfault not related to unallocated segment\n");
+            exit(1);
+        }
     }
 
     int page_size = 4096;
