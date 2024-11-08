@@ -1,111 +1,136 @@
 #define _GNU_SOURCE
 #include "loader.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <elf.h>
 #include <signal.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <string.h>
 
-int page_faults = 0;
-int page_allocations = 0;
-double fragmented_memory = 0.0;
-
+int fd, page_faults = 0;
+double allocated_pages = 0;
+double fragmentation = 0;
 Elf32_Ehdr *ehdr;
 Elf32_Phdr *phdr;
-int fd;
+struct sigaction sa;
 
-void loader_cleanup() {
+// Helper Functions
+void free_elf_header() {
     if (ehdr) {
         free(ehdr);
         ehdr = NULL;
     }
+}
+
+void free_program_headers() {
     if (phdr) {
         free(phdr);
         phdr = NULL;
     }
 }
 
-void segfault_handler(int signo, siginfo_t *si, void *context) {
-    printf("Caught segfault at address %p\n", si->si_addr);
-    page_faults++;
-
-    int target_segment = -1;
-    for (int i = 0; i < ehdr->e_phnum; i++) {
-        if (phdr[i].p_type == PT_LOAD) {
-            if ((int)si->si_addr >= (int)phdr[i].p_vaddr && (int)si->si_addr < (int)(phdr[i].p_vaddr + phdr[i].p_memsz)) {
-                target_segment = i;
-                break;
-            }
-        }
-    }
-
-    if (target_segment == -1) {
-        printf("Segfault not related to unallocated segment\n");
-        exit(1);
-    }
-
-    void *mem = mmap((void *)phdr[target_segment].p_vaddr, phdr[target_segment].p_memsz, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-    if (mem == MAP_FAILED) {
-        printf("Error mapping memory\n");
-        exit(1);
-    }
-    page_allocations++;
-
-    lseek(fd, phdr[target_segment].p_offset, SEEK_SET);
-    if (read(fd, mem, phdr[target_segment].p_memsz) != phdr[target_segment].p_memsz) {
-        printf("Error reading from file\n");
-        exit(1);
-    }
-
-    int fragmented_bytes = (int)phdr[target_segment].p_memsz % 4096;
-    if (fragmented_bytes > 0) {
-        fragmented_memory += (double)fragmented_bytes / 1024.0;
-    }
-
-    void *entry_point = (void *)((int)phdr[target_segment].p_vaddr + (ehdr->e_entry - phdr[target_segment].p_vaddr));
-    ((void (*)())entry_point)();
-}
-
-void load_and_run_elf(char **argv) {
-    fd = open(argv[1], O_RDONLY);
-    if (fd == -1) {
-        printf("Error opening file\n");
-        exit(1);
-    }
-
-    ehdr = (Elf32_Ehdr *)malloc(sizeof(Elf32_Ehdr));
-    if (read(fd, ehdr, sizeof(Elf32_Ehdr)) != sizeof(Elf32_Ehdr)) {
-        printf("Error reading ELF header\n");
-        close(fd);
-        exit(1);
-    }
-
-    phdr = (Elf32_Phdr *)malloc(sizeof(Elf32_Phdr) * ehdr->e_phnum);
-    lseek(fd, ehdr->e_phoff, SEEK_SET);
-    if (read(fd, phdr, sizeof(Elf32_Phdr) * ehdr->e_phnum) != sizeof(Elf32_Phdr) * ehdr->e_phnum) {
-        printf("Error reading program headers\n");
-        close(fd);
-        exit(1);
-    }
-
-    struct sigaction sa;
-    sa.sa_sigaction = segfault_handler;
-    sa.sa_flags = SA_SIGINFO;
-    sigaction(SIGSEGV, &sa, NULL);
-
-    // Call the _start function to start the program execution
-    ((void (*)())ehdr->e_entry)();
-
-    printf("Total page faults: %d\n", page_faults);
-    printf("Total page allocations: %d\n", page_allocations);
-    printf("Total fragmented memory: %.2f KB\n", fragmented_memory);
-
-    loader_cleanup();
+void cleanup() {
+    free_elf_header();
+    free_program_headers();
     close(fd);
 }
 
-int main(int argc, char **argv) {
-    if (argc != 2) {
-        printf("Usage: %s <ELF Executable>\n", argv[0]);
+// Loads the ELF header from the file descriptor
+void load_elf_header(int fd) {
+    ehdr = (Elf32_Ehdr *)malloc(sizeof(Elf32_Ehdr));
+    if (!ehdr) {
+        perror("Failed to allocate memory for ELF header");
         exit(1);
     }
+    if (read(fd, ehdr, sizeof(Elf32_Ehdr)) != sizeof(Elf32_Ehdr)) {
+        perror("Failed to read ELF header");
+        exit(1);
+    }
+}
 
-    load_and_run_elf(argv);
+// Loads program headers from the file descriptor
+void load_program_headers(int fd) {
+    phdr = (Elf32_Phdr *)malloc(ehdr->e_phentsize * ehdr->e_phnum);
+    lseek(fd, ehdr->e_phoff, SEEK_SET);
+    if (read(fd, phdr, ehdr->e_phentsize * ehdr->e_phnum) != ehdr->e_phentsize * ehdr->e_phnum) {
+        perror("Failed to read program headers");
+        exit(1);
+    }
+}
+
+// Calculate page size based on segment size
+size_t page_size(size_t mem_size) {
+    size_t size = 0;
+    while (size < mem_size) size += 4096;
+    return size;
+}
+
+// Handles segmentation faults and maps pages when accessed
+void segfault_handler(int signo, siginfo_t *si, void *context) {
+    page_faults++;
+    printf("Caught segmentation fault at address: %p\n", si->si_addr);
+    for (int i = 0; i < ehdr->e_phnum; i++) {
+        if (phdr[i].p_type == PT_LOAD) {
+            if ((int)si->si_addr >= phdr[i].p_vaddr && (int)si->si_addr < (phdr[i].p_vaddr + phdr[i].p_memsz)) {
+                size_t size_needed = page_size(phdr[i].p_memsz);
+                void *mapped_memory = mmap((void *)phdr[i].p_vaddr, size_needed, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                           MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS, -1, 0);
+                if (mapped_memory == MAP_FAILED) {
+                    perror("Memory mapping failed");
+                    exit(1);
+                }
+                lseek(fd, phdr[i].p_offset, SEEK_SET);
+                if (read(fd, mapped_memory, phdr[i].p_filesz) != phdr[i].p_filesz) {
+                    perror("Failed to read segment data into memory");
+                    exit(1);
+                }
+                allocated_pages += (double)size_needed / 4096;
+                fragmentation += (size_needed - phdr[i].p_memsz);
+                return;
+            }
+        }
+    }
+}
+
+// Initialize the loader and set up the signal handler
+void setup_loader(char *file) {
+    fd = open(file, O_RDONLY);
+    if (fd == -1) {
+        perror("Failed to open file");
+        exit(1);
+    }
+    load_elf_header(fd);
+    load_program_headers(fd);
+    sa.sa_flags = SA_SIGINFO;
+    sa.sa_sigaction = segfault_handler;
+    sigaction(SIGSEGV, &sa, NULL);
+}
+
+// Entry point to run the ELF executable
+void execute_entry_point() {
+    int (*entry)() = (int (*)())ehdr->e_entry;
+    int result = entry();
+    printf("Program returned: %d\n", result);
+}
+
+// Main function
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <ELF file>\n", argv[0]);
+        return 1;
+    }
+    setup_loader(argv[1]);
+    execute_entry_point();
+
+    // Summary of page faults and memory usage
+    printf("Page Faults: %d\n", page_faults);
+    printf("Allocated Pages: %f\n", allocated_pages);
+    printf("Fragmented Memory: %f KB\n", fragmentation / 1024);
+    
+    cleanup();
     return 0;
 }
