@@ -1,10 +1,18 @@
 #define _GNU_SOURCE
 #include "loader.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <elf.h>
 #include <signal.h>
+#include <sys/mman.h>
+#include <sys/types.h>
 #include <sys/stat.h>
+#include <string.h>
 
 int fd, page_faults = 0;
-double allocated_pages = 0;
+int allocated_pages = 0;
 double fragmentation = 0;
 Elf32_Ehdr *ehdr;
 Elf32_Phdr *phdr;
@@ -162,7 +170,7 @@ void segfault_handler(int signo, siginfo_t *si, void *context) {
                     printf("\n");
                     exit(1);
                 }
-                allocated_pages += (double)size_needed / 4096;
+                allocated_pages += (int)size_needed / 4096;
                 fragmentation += (size_needed - phdr[i].p_memsz);
                 return;
             }
@@ -190,7 +198,7 @@ int main(int argc, char **argv) {
 
     // Summary of page faults and memory usage
     printf("Page Faults: %d\n", page_faults);
-    printf("Allocated Pages: %f\n", allocated_pages);
+    printf("Allocated Pages: %d\n", allocated_pages);
     printf("Fragmented Memory: %f KB\n", fragmentation / 1024);
     
     loader_cleanup();
